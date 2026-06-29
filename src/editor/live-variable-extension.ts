@@ -6,7 +6,7 @@ import {
 	ViewUpdate,
 	WidgetType,
 } from "@codemirror/view";
-import { RangeSetBuilder, StateEffect } from "@codemirror/state";
+import { EditorSelection, RangeSetBuilder, StateEffect } from "@codemirror/state";
 import { MarkdownView } from "obsidian";
 import LiveVariables from "../main";
 import {
@@ -54,21 +54,28 @@ class LiveVariableWidget extends WidgetType {
 			span.className = "lv-live-text";
 		}
 		span.textContent = this.value;
-		// Hovering reveals the underlying {{variable}} without touching the
-		// document; moving the mouse away restores the rendered value.
-		span.addEventListener("mouseenter", () => {
-			span.textContent = this.source;
-		});
-		span.addEventListener("mouseleave", () => {
-			span.textContent = this.value;
+		// A single click selects the whole {{variable}} source so it can be
+		// retyped/replaced immediately. We drive the selection ourselves
+		// (rather than letting the caret land somewhere inside the widget) so
+		// editing never depends on a precise click position.
+		span.addEventListener("mousedown", (event) => {
+			event.preventDefault();
+			const pos = view.posAtDOM(span);
+			view.dispatch({
+				selection: EditorSelection.range(
+					pos,
+					pos + this.source.length
+				),
+			});
+			view.focus();
 		});
 		return span;
 	}
 
 	ignoreEvent(): boolean {
-		// Let CodeMirror handle clicks so the cursor can move into the token
-		// and reveal the raw {{...}} source for editing.
-		return false;
+		// We handle clicks ourselves (see toDOM), so keep CodeMirror from also
+		// moving the caret in response to the same event.
+		return true;
 	}
 }
 
@@ -95,14 +102,19 @@ const buildDecorations = (
 			const start = from + match.index;
 			const end = start + match[0].length;
 
-			// Reveal the raw source only for a collapsed caret sitting on the
-			// token (for editing). A multi-character selection keeps the
-			// rendered preview so it can be selected and copied as the value.
-			const caretInside = selectionRanges.some(
+			// Reveal the raw source for editing in two cases: a collapsed caret
+			// sitting on the token, or a selection whose bounds exactly match
+			// the token (what a click on the widget produces). A broader
+			// multi-character selection keeps the rendered preview so it can be
+			// selected and copied as the value.
+			const revealSource = selectionRanges.some(
 				(range) =>
-					range.empty && range.from <= end && range.to >= start
+					(range.empty &&
+						range.from <= end &&
+						range.to >= start) ||
+					(range.from === start && range.to === end)
 			);
-			if (caretInside) {
+			if (revealSource) {
 				continue;
 			}
 
